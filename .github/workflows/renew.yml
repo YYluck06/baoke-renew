@@ -1,0 +1,202 @@
+name: 宝可梦月度续期
+
+# ============================================================
+# 这个仓库（公开库）里【只有工作流】，不含任何代码、账号、订阅链接。
+# 真正的脚本放在私有库（默认 pokemon-renew-core），运行时用 PAT 拉下来到 app/ 目录执行。
+#
+# 需要配置（都在本仓库 Settings 里，公开库的 Secrets 也是加密不可见的）：
+#   Variables: CODE_REPO          = 你的用户名/pokemon-renew-core
+#   Secrets  : CODE_REPO_TOKEN    = 细粒度 PAT，只给那个私有库 Contents: Read
+#              TG_TOKEN / TG_CHAT
+#              ACC1_EMAIL / ACC1_PASS / ACC2_EMAIL / ACC2_PASS / ACC3_EMAIL / ACC3_PASS
+#              PROXY_NODE_1 / PROXY_NODE_2 / PROXY_NODE_3（留空则直连）
+# ============================================================
+
+on:
+  schedule:
+    # 每月 1 号 13:00 UTC = 北京 21:00
+    - cron: '0 13 1 * *'
+  workflow_dispatch:
+    inputs:
+      code:
+        description: '续期码（留空则去 Telegram 里问你）'
+        required: false
+      dry:
+        description: '只演练不下单'
+        type: boolean
+        default: false
+
+concurrency:
+  group: pokemon-renew
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------- 1) 在 TG 里问续期码，等你回复 ----------------
+  ask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    outputs:
+      code: ${{ steps.ask.outputs.code }}
+    steps:
+      - name: 检查 CODE_REPO 变量
+        run: |
+          if [ -z "${{ vars.CODE_REPO }}" ]; then
+            echo "::error::没有配置仓库变量 CODE_REPO（Settings → Secrets and variables → Actions → Variables），值应为 用户名/pokemon-renew-core"
+            exit 1
+          fi
+      - name: 拉取私有代码仓
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODE_REPO }}
+          token: ${{ secrets.CODE_REPO_TOKEN }}
+          path: app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 在 Telegram 里询问续期码
+        id: ask
+        working-directory: app
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          WAIT_MINUTES: '45'
+          INPUT_CODE: ${{ inputs.code }}
+        run: node scripts/ask-code.mjs
+
+  # ---------------- 2) 账号1（独立 runner，独立代理节点） ----------------
+  renew-1:
+    needs: ask
+    if: needs.ask.outputs.code != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ACC_LABEL: '账号1'
+      ACC_EMAIL: ${{ secrets.ACC1_EMAIL }}
+      ACC_PASS: ${{ secrets.ACC1_PASS }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_1 }}
+      PROXY_URL: ${{ secrets.PROXY_NODE_1 != '' && 'http://127.0.0.1:2080' || '' }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT: ${{ secrets.TG_CHAT }}
+      COUPON_CODE: ${{ needs.ask.outputs.code }}
+      DRY: ${{ inputs.dry && '1' || '' }}
+    steps:
+      - name: 拉取私有代码仓
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODE_REPO }}
+          token: ${{ secrets.CODE_REPO_TOKEN }}
+          path: app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+      - name: 安装浏览器
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: 启动代理（节点1）
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-proxy.sh
+      - name: 免费续期 + 推送订阅链接
+        working-directory: app
+        run: node scripts/run-account.mjs
+      - name: 失败告警
+        if: failure()
+        working-directory: app
+        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号1 续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
+
+  # ---------------- 3) 账号2 ----------------
+  renew-2:
+    needs: ask
+    if: needs.ask.outputs.code != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ACC_LABEL: '账号2'
+      ACC_EMAIL: ${{ secrets.ACC2_EMAIL }}
+      ACC_PASS: ${{ secrets.ACC2_PASS }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_2 }}
+      PROXY_URL: ${{ secrets.PROXY_NODE_2 != '' && 'http://127.0.0.1:2080' || '' }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT: ${{ secrets.TG_CHAT }}
+      COUPON_CODE: ${{ needs.ask.outputs.code }}
+      DRY: ${{ inputs.dry && '1' || '' }}
+    steps:
+      - name: 拉取私有代码仓
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODE_REPO }}
+          token: ${{ secrets.CODE_REPO_TOKEN }}
+          path: app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+      - name: 安装浏览器
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: 启动代理（节点2）
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-proxy.sh
+      - name: 免费续期 + 推送订阅链接
+        working-directory: app
+        run: node scripts/run-account.mjs
+      - name: 失败告警
+        if: failure()
+        working-directory: app
+        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号2 续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
+
+  # ---------------- 4) 账号3 ----------------
+  renew-3:
+    needs: ask
+    if: needs.ask.outputs.code != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ACC_LABEL: '账号3'
+      ACC_EMAIL: ${{ secrets.ACC3_EMAIL }}
+      ACC_PASS: ${{ secrets.ACC3_PASS }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_3 }}
+      PROXY_URL: ${{ secrets.PROXY_NODE_3 != '' && 'http://127.0.0.1:2080' || '' }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT: ${{ secrets.TG_CHAT }}
+      COUPON_CODE: ${{ needs.ask.outputs.code }}
+      DRY: ${{ inputs.dry && '1' || '' }}
+    steps:
+      - name: 拉取私有代码仓
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODE_REPO }}
+          token: ${{ secrets.CODE_REPO_TOKEN }}
+          path: app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+      - name: 安装浏览器
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: 启动代理（节点3）
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-proxy.sh
+      - name: 免费续期 + 推送订阅链接
+        working-directory: app
+        run: node scripts/run-account.mjs
+      - name: 失败告警
+        if: failure()
+        working-directory: app
+        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号3 续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
