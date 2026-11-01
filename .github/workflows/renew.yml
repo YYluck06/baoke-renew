@@ -98,8 +98,8 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
-      # 想让「剩余天数 > 30 天就跳过」时取消注释
-      # SKIP_IF_DAYS_GT: '30'
+      # 剩余天数 > 30 天就跳过（本月已经续过），避免浪费码 / 触发「该优惠券每人只能用 1 次」
+      SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
@@ -155,7 +155,7 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
-      # SKIP_IF_DAYS_GT: '30'
+      SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
@@ -211,7 +211,7 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
-      # SKIP_IF_DAYS_GT: '30'
+      SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
