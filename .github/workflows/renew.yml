@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       code:
-        description: '续期码（留空则去 Telegram 里问你）'
+        description: '续期码（留空则去 Telegram 里问你；必填才不会有跳过风险）'
         required: false
       dry:
         description: '只演练不下单'
@@ -82,6 +82,8 @@ jobs:
       TG_CHAT: ${{ secrets.TG_CHAT }}
       COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
+      # 想让「剩余天数 > 30 天就跳过、不浪费码」时，取消下一行注释（默认不跳过，总是续期）
+      # SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
@@ -127,6 +129,7 @@ jobs:
       TG_CHAT: ${{ secrets.TG_CHAT }}
       COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
+      # SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
@@ -172,6 +175,7 @@ jobs:
       TG_CHAT: ${{ secrets.TG_CHAT }}
       COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
+      # SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
         uses: actions/checkout@v4
