@@ -1,25 +1,24 @@
 name: 宝可梦月度续期
 
 # ============================================================
-# 这个仓库（公开库）里【只有工作流】，不含任何代码、账号、订阅链接。
-# 真正的脚本放在私有库（默认 pokemon-renew-core），运行时用 PAT 拉下来到 app/ 目录执行。
+# 公开库：只有这一个工作流，代码在私有库（vars.CODE_REPO），运行时 checkout 到 app/ 执行。
+# 续期码传递不用 job outputs（易静默失败），改成「ask 写 code.txt → 上传 artifact → 各账号下载」。
 #
-# 需要配置（都在本仓库 Settings 里，公开库的 Secrets 也是加密不可见的）：
-#   Variables: CODE_REPO          = 你的用户名/pokemon-renew-core
-#   Secrets  : CODE_REPO_TOKEN    = 细粒度 PAT，只给那个私有库 Contents: Read
+# 需配置（公开库 Settings）：
+#   Variables: CODE_REPO        = 用户名/baoke-renew-core
+#   Secrets  : CODE_REPO_TOKEN  = 只读私有库的细粒度 PAT
 #              TG_TOKEN / TG_CHAT
 #              ACC1_EMAIL / ACC1_PASS / ACC2_EMAIL / ACC2_PASS / ACC3_EMAIL / ACC3_PASS
-#              PROXY_NODE_1 / PROXY_NODE_2 / PROXY_NODE_3（留空则直连）
+#              PROXY_NODE_1 / PROXY_NODE_2 / PROXY_NODE_3（留空 = 直连）
 # ============================================================
 
 on:
   schedule:
-    # 每月 1 号 13:00 UTC = 北京 21:00
-    - cron: '0 13 1 * *'
+    - cron: '0 13 1 * *'          # 每月 1 号 13:00 UTC = 北京 21:00
   workflow_dispatch:
     inputs:
       code:
-        description: '续期码（留空则去 Telegram 里问你；必填才不会有跳过风险）'
+        description: '续期码（留空则去 Telegram 里问你）'
         required: false
       dry:
         description: '只演练不下单'
@@ -30,11 +29,12 @@ concurrency:
   group: pokemon-renew
   cancel-in-progress: false
 
+# 保活任务要往公开库提交时间戳，所以需要写权限
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  # ---------------- 1) 在 TG 里问续期码，等你回复 ----------------
+  # ---------------- 1) 问续期码 ----------------
   ask:
     runs-on: ubuntu-latest
     timeout-minutes: 65
@@ -44,7 +44,7 @@ jobs:
       - name: 检查 CODE_REPO 变量
         run: |
           if [ -z "${{ vars.CODE_REPO }}" ]; then
-            echo "::error::没有配置仓库变量 CODE_REPO（Settings → Secrets and variables → Actions → Variables），值应为 用户名/pokemon-renew-core"
+            echo "::error::没有配置仓库变量 CODE_REPO（Settings → Secrets and variables → Actions → Variables），值应为 用户名/baoke-renew-core"
             exit 1
           fi
       - name: 拉取私有代码仓
@@ -64,12 +64,29 @@ jobs:
           TG_CHAT: ${{ secrets.TG_CHAT }}
           WAIT_MINUTES: '45'
           INPUT_CODE: ${{ inputs.code }}
+          CODE_FILE: ${{ github.workspace }}/code.txt
         run: node scripts/ask-code.mjs
+      - name: 诊断 output 是否为空
+        env:
+          V: ${{ steps.ask.outputs.code }}
+        run: echo "ask 的 output 长度 = ${#V}"
+      - name: 校验续期码文件
+        run: |
+          if [ ! -s code.txt ]; then
+            echo "::error::没有拿到续期码（code.txt 为空）→ 看上面「在 Telegram 里询问续期码」那一步的日志"
+            exit 1
+          fi
+          echo "code.txt 大小: $(wc -c < code.txt) 字节"
+      - name: 上传续期码给后续 job
+        uses: actions/upload-artifact@v4
+        with:
+          name: coupon-code
+          path: code.txt
+          retention-days: 1
 
-  # ---------------- 2) 账号1（独立 runner，独立代理节点） ----------------
+  # ---------------- 2) 账号1 ----------------
   renew-1:
     needs: ask
-    if: needs.ask.outputs.code != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -80,9 +97,8 @@ jobs:
       PROXY_URL: ${{ secrets.PROXY_NODE_1 != '' && 'http://127.0.0.1:2080' || '' }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
-      COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
-      # 想让「剩余天数 > 30 天就跳过、不浪费码」时，取消下一行注释（默认不跳过，总是续期）
+      # 想让「剩余天数 > 30 天就跳过」时取消注释
       # SKIP_IF_DAYS_GT: '30'
     steps:
       - name: 拉取私有代码仓
@@ -91,6 +107,18 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+      - name: 下载续期码
+        uses: actions/download-artifact@v4
+        with:
+          name: coupon-code
+          path: .
+      - name: 读取续期码
+        run: |
+          CODE=$(tr -d '\r\n' < code.txt)
+          if [ -z "$CODE" ]; then echo "::error::续期码为空"; exit 1; fi
+          echo "::add-mask::$CODE"
+          echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "续期码长度 ${#CODE}"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -116,7 +144,6 @@ jobs:
   # ---------------- 3) 账号2 ----------------
   renew-2:
     needs: ask
-    if: needs.ask.outputs.code != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -127,7 +154,6 @@ jobs:
       PROXY_URL: ${{ secrets.PROXY_NODE_2 != '' && 'http://127.0.0.1:2080' || '' }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
-      COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
       # SKIP_IF_DAYS_GT: '30'
     steps:
@@ -137,6 +163,18 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+      - name: 下载续期码
+        uses: actions/download-artifact@v4
+        with:
+          name: coupon-code
+          path: .
+      - name: 读取续期码
+        run: |
+          CODE=$(tr -d '\r\n' < code.txt)
+          if [ -z "$CODE" ]; then echo "::error::续期码为空"; exit 1; fi
+          echo "::add-mask::$CODE"
+          echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "续期码长度 ${#CODE}"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -162,7 +200,6 @@ jobs:
   # ---------------- 4) 账号3 ----------------
   renew-3:
     needs: ask
-    if: needs.ask.outputs.code != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -173,7 +210,6 @@ jobs:
       PROXY_URL: ${{ secrets.PROXY_NODE_3 != '' && 'http://127.0.0.1:2080' || '' }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
-      COUPON_CODE: ${{ needs.ask.outputs.code }}
       DRY: ${{ inputs.dry && '1' || '' }}
       # SKIP_IF_DAYS_GT: '30'
     steps:
@@ -183,6 +219,18 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+      - name: 下载续期码
+        uses: actions/download-artifact@v4
+        with:
+          name: coupon-code
+          path: .
+      - name: 读取续期码
+        run: |
+          CODE=$(tr -d '\r\n' < code.txt)
+          if [ -z "$CODE" ]; then echo "::error::续期码为空"; exit 1; fi
+          echo "::add-mask::$CODE"
+          echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "续期码长度 ${#CODE}"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -204,3 +252,20 @@ jobs:
         if: failure()
         working-directory: app
         run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号3 续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
+
+  # ---------------- 5) 仓库保活（防 60 天无活动被停用 cron） ----------------
+  keepalive:
+    needs: [renew-1, renew-2, renew-3]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 公开库自身
+        uses: actions/checkout@v4
+      - name: 更新时间戳并提交
+        run: |
+          date -u +"%Y-%m-%d %H:%M:%S UTC" > heartbeat.txt
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add heartbeat.txt
+          git commit -m "chore(keepalive): automated heartbeat $(date -u +'%Y-%m-%d')" || exit 0
+          git push
