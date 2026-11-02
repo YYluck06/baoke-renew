@@ -1,15 +1,18 @@
 name: 宝可梦月度续期
 
 # ============================================================
-# 公开库：只有这一个工作流，代码在私有库（vars.CODE_REPO），运行时 checkout 到 app/ 执行。
-# 续期码传递不用 job outputs（易静默失败），改成「ask 写 code.txt → 上传 artifact → 各账号下载」。
+# 公开库只有这一个工作流；代码在私有库（vars.CODE_REPO），运行时 checkout 到 app/ 执行。
+# 续期码传递：ask 写 code.txt → 上传 artifact → 各账号 job 下载（不用 job outputs，避免静默失败）。
 #
-# 需配置（公开库 Settings）：
-#   Variables: CODE_REPO        = 用户名/baoke-renew-core
-#   Secrets  : CODE_REPO_TOKEN  = 只读私有库的细粒度 PAT
+# 需配置（公开库 Settings → Secrets and variables → Actions）：
+#   Variables: CODE_REPO       = 用户名/baoke-renew-core
+#              （PROXY_NODE_1/2/3 放 Variables 或 Secrets 都可以，工作流两个都读）
+#   Secrets  : CODE_REPO_TOKEN = 只读私有库的细粒度 PAT
 #              TG_TOKEN / TG_CHAT
 #              ACC1_EMAIL / ACC1_PASS / ACC2_EMAIL / ACC2_PASS / ACC3_EMAIL / ACC3_PASS
 #              PROXY_NODE_1 / PROXY_NODE_2 / PROXY_NODE_3（留空 = 直连）
+#
+# 手动触发时可勾选 selftest：只跑代理自测（全部假节点、不碰账号），用来验证 sing-box 通路
 # ============================================================
 
 on:
@@ -24,6 +27,10 @@ on:
         description: '只演练不下单'
         type: boolean
         default: false
+      selftest:
+        description: '只跑代理隔离自测（假节点，不碰账号）'
+        type: boolean
+        default: false
 
 concurrency:
   group: pokemon-renew
@@ -34,8 +41,45 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------- 0) 代理隔离自测（手动勾选 selftest 才跑） ----------------
+  proxy-selftest:
+    if: ${{ inputs.selftest }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检查 CODE_REPO 变量
+        run: |
+          if [ -z "${{ vars.CODE_REPO }}" ]; then
+            echo "::error::没有配置仓库变量 CODE_REPO（应为 用户名/baoke-renew-core）"; exit 1
+          fi
+      - name: 拉取私有代码仓
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODE_REPO }}
+          token: ${{ secrets.CODE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 下载 sing-box（固定 v1.13.14）
+        run: |
+          mkdir -p /tmp/sb
+          curl -fL --retry 3 --connect-timeout 15 \
+            -o /tmp/sb/sb.tgz \
+            https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz
+          tar -xzf /tmp/sb/sb.tgz -C /tmp/sb
+          chmod +x /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
+          /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box version | head -1
+      - name: 跑隔离自测（全部假节点：socks5 无认证 / socks5 带认证 / hy2 / vmess）
+        working-directory: app
+        env:
+          SB_BIN: /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
+        run: node scripts/selftest-proxy.mjs
+
   # ---------------- 1) 问续期码 ----------------
   ask:
+    if: ${{ !inputs.selftest }}
     runs-on: ubuntu-latest
     timeout-minutes: 65
     outputs:
@@ -53,6 +97,7 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -93,8 +138,8 @@ jobs:
       ACC_LABEL: '账号1'
       ACC_EMAIL: ${{ secrets.ACC1_EMAIL }}
       ACC_PASS: ${{ secrets.ACC1_PASS }}
-      PROXY_NODE: ${{ secrets.PROXY_NODE_1 }}
-      PROXY_URL: ${{ secrets.PROXY_NODE_1 != '' && 'http://127.0.0.1:2080' || '' }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_1 || vars.PROXY_NODE_1 }}
+      PROXY_SRC: ${{ secrets.PROXY_NODE_1 && 'Secrets.PROXY_NODE_1' || (vars.PROXY_NODE_1 && 'Variables.PROXY_NODE_1' || '两者都为空') }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
@@ -107,6 +152,7 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+          persist-credentials: false
       - name: 下载续期码
         uses: actions/download-artifact@v4
         with:
@@ -119,6 +165,14 @@ jobs:
           echo "::add-mask::$CODE"
           echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
           echo "续期码长度 ${#CODE}"
+      - name: 账号 / 代理配置预检
+        env:
+          P: ${{ secrets.PROXY_NODE_1 || vars.PROXY_NODE_1 }}
+          E: ${{ secrets.ACC1_EMAIL }}
+        run: |
+          echo "账号1 邮箱是否已配: $([ -n "$E" ] && echo yes || echo NO)"
+          echo "账号1 密码是否已配: $([ -n "${{ secrets.ACC1_PASS }}" ] && echo yes || echo NO)"
+          echo "代理节点长度: ${#P}（0 = 直连）"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -150,8 +204,8 @@ jobs:
       ACC_LABEL: '账号2'
       ACC_EMAIL: ${{ secrets.ACC2_EMAIL }}
       ACC_PASS: ${{ secrets.ACC2_PASS }}
-      PROXY_NODE: ${{ secrets.PROXY_NODE_2 }}
-      PROXY_URL: ${{ secrets.PROXY_NODE_2 != '' && 'http://127.0.0.1:2080' || '' }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_2 || vars.PROXY_NODE_2 }}
+      PROXY_SRC: ${{ secrets.PROXY_NODE_2 && 'Secrets.PROXY_NODE_2' || (vars.PROXY_NODE_2 && 'Variables.PROXY_NODE_2' || '两者都为空') }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
@@ -163,6 +217,7 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+          persist-credentials: false
       - name: 下载续期码
         uses: actions/download-artifact@v4
         with:
@@ -175,6 +230,13 @@ jobs:
           echo "::add-mask::$CODE"
           echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
           echo "续期码长度 ${#CODE}"
+      - name: 账号 / 代理配置预检
+        env:
+          P: ${{ secrets.PROXY_NODE_2 || vars.PROXY_NODE_2 }}
+          E: ${{ secrets.ACC2_EMAIL }}
+        run: |
+          echo "账号2 邮箱是否已配: $([ -n "$E" ] && echo yes || echo NO)"
+          echo "代理节点长度: ${#P}（0 = 直连）"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -206,8 +268,8 @@ jobs:
       ACC_LABEL: '账号3'
       ACC_EMAIL: ${{ secrets.ACC3_EMAIL }}
       ACC_PASS: ${{ secrets.ACC3_PASS }}
-      PROXY_NODE: ${{ secrets.PROXY_NODE_3 }}
-      PROXY_URL: ${{ secrets.PROXY_NODE_3 != '' && 'http://127.0.0.1:2080' || '' }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE_3 || vars.PROXY_NODE_3 }}
+      PROXY_SRC: ${{ secrets.PROXY_NODE_3 && 'Secrets.PROXY_NODE_3' || (vars.PROXY_NODE_3 && 'Variables.PROXY_NODE_3' || '两者都为空') }}
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
       DRY: ${{ inputs.dry && '1' || '' }}
@@ -219,6 +281,7 @@ jobs:
           repository: ${{ vars.CODE_REPO }}
           token: ${{ secrets.CODE_REPO_TOKEN }}
           path: app
+          persist-credentials: false
       - name: 下载续期码
         uses: actions/download-artifact@v4
         with:
@@ -231,6 +294,13 @@ jobs:
           echo "::add-mask::$CODE"
           echo "COUPON_CODE=$CODE" >> "$GITHUB_ENV"
           echo "续期码长度 ${#CODE}"
+      - name: 账号 / 代理配置预检
+        env:
+          P: ${{ secrets.PROXY_NODE_3 || vars.PROXY_NODE_3 }}
+          E: ${{ secrets.ACC3_EMAIL }}
+        run: |
+          echo "账号3 邮箱是否已配: $([ -n "$E" ] && echo yes || echo NO)"
+          echo "代理节点长度: ${#P}（0 = 直连）"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
