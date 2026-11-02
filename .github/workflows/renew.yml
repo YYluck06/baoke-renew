@@ -216,6 +216,14 @@ jobs:
       - name: 免费续期 + 推送订阅链接
         working-directory: app
         run: node scripts/run-account.mjs
+      - name: 上传失败截图（排查用，保留 3 天）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-account1
+          path: app/shots
+          retention-days: 3
+          if-no-files-found: ignore
       - name: 失败告警
         if: failure()
         working-directory: app
@@ -281,6 +289,14 @@ jobs:
       - name: 免费续期 + 推送订阅链接
         working-directory: app
         run: node scripts/run-account.mjs
+      - name: 上传失败截图（排查用，保留 3 天）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-account2
+          path: app/shots
+          retention-days: 3
+          if-no-files-found: ignore
       - name: 失败告警
         if: failure()
         working-directory: app
@@ -346,6 +362,14 @@ jobs:
       - name: 免费续期 + 推送订阅链接
         working-directory: app
         run: node scripts/run-account.mjs
+      - name: 上传失败截图（排查用，保留 3 天）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-account3
+          path: app/shots
+          retention-days: 3
+          if-no-files-found: ignore
       - name: 失败告警
         if: failure()
         working-directory: app
